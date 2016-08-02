@@ -189,16 +189,19 @@ void rans_build_dec_tab(const struct rans_sym sym_tab[], rans_lut dec_tab) {
 
 #define BUF_SIZE (50000000)
 
+#define SYMBOLS INTRA_MODES
+#define TREE av1_intra_mode_tree
+#define PROBS default_if_y_probs[0]
+
 int main(int argc, char *argv[]) {
-  uint16_t av1_intra_mode_cdf[INTRA_MODES];
-  av1_tree_to_cdf(av1_intra_mode_tree, default_if_y_probs[0],
-   av1_intra_mode_cdf);
+  uint16_t cdf[SYMBOLS];
+  av1_tree_to_cdf(TREE, PROBS, cdf);
   int i;
-  for (i = 0; i < INTRA_MODES; i++) {
+  for (i = 0; i < SYMBOLS; i++) {
     int pdf;
-    pdf = av1_intra_mode_cdf[i];
+    pdf = cdf[i];
     if (i > 0) {
-      pdf -= av1_intra_mode_cdf[i-1];
+      pdf -= cdf[i-1];
     }
     fprintf(stdout, "%i: %i (%lf)\n", i, pdf, pdf/32768.0);
   }
@@ -209,7 +212,7 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Error allocating memory for symbols\n");
     return EXIT_FAILURE;
   }
-  gen_symbs(NSYMBS, symbs, INTRA_MODES, av1_intra_mode_cdf);
+  gen_symbs(NSYMBS, symbs, SYMBOLS, cdf);
   /* Encode NSYMBS using the Daala entropy coder. */
   uint8_t *buffer;
   buffer = malloc(BUF_SIZE);
@@ -222,7 +225,7 @@ int main(int argc, char *argv[]) {
   daala_writer dw;
   aom_daala_start_encode(&dw, buffer);
   for (i = 0; i < NSYMBS; i++) {
-    daala_write_symbol(&dw, symbs[i], av1_intra_mode_cdf, INTRA_MODES);
+    daala_write_symbol(&dw, symbs[i], cdf, SYMBOLS);
   }
   aom_daala_stop_encode(&dw);
   gettimeofday(&t1, 0);
@@ -239,7 +242,7 @@ int main(int argc, char *argv[]) {
   daala_reader dr;
   aom_daala_reader_init(&dr, buffer, dw.pos);
   for (i = 0; i < NSYMBS; i++) {
-    dsymbs[i] = daala_read_tree_cdf(&dr, av1_intra_mode_cdf, INTRA_MODES);
+    dsymbs[i] = daala_read_tree_cdf(&dr, cdf, SYMBOLS);
   }
   gettimeofday(&t1, 0);
   int err;
@@ -252,17 +255,16 @@ int main(int argc, char *argv[]) {
   fprintf(stderr, "Daala EC errors = %i (%lf ms)\n", err,
    (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f);
   /* Encode NSYMBS using the vpxbool entropy coder */
-  struct av1_token intra_mode_encodings[INTRA_MODES];
-  av1_tokens_from_tree(intra_mode_encodings, av1_intra_mode_tree);
-  int ind[INTRA_MODES];
-  int inv[INTRA_MODES];
-  av1_indices_from_tree(inv, ind, INTRA_MODES, av1_intra_mode_tree);
+  struct av1_token tokens[SYMBOLS];
+  av1_tokens_from_tree(tokens, TREE);
+  int ind[SYMBOLS];
+  int inv[SYMBOLS];
+  av1_indices_from_tree(inv, ind, SYMBOLS, TREE);
   gettimeofday(&t0, 0);
   aom_dk_writer bw;
   aom_dk_start_encode(&bw, buffer);
   for (i = 0; i < NSYMBS; i++) {
-    av1_write_token(&bw, av1_intra_mode_tree, default_if_y_probs[0],
-     &intra_mode_encodings[ind[symbs[i]]]);
+    av1_write_token(&bw, TREE, PROBS, &tokens[ind[symbs[i]]]);
   }
   aom_dk_stop_encode(&bw);
   gettimeofday(&t1, 0);
@@ -273,8 +275,7 @@ int main(int argc, char *argv[]) {
   struct aom_dk_reader br;
   aom_dk_reader_init(&br, buffer, bw.pos, NULL, NULL);
   for (i = 0; i < NSYMBS; i++) {
-    dsymbs[i] = 
-     inv[aom_read_tree(&br, av1_intra_mode_tree, default_if_y_probs[0])];
+    dsymbs[i] = inv[aom_read_tree(&br, TREE, PROBS)];
   }
   gettimeofday(&t1, 0);
   err = 0;
@@ -287,8 +288,8 @@ int main(int argc, char *argv[]) {
    (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f);
   /* Encode NSYMBS using the rANS entropy coder.
      Note the symbols are encoded in reverse order. */
-  struct rans_sym rans_sym_tab[INTRA_MODES];
-  rans_build_sym_tab(av1_intra_mode_cdf, rans_sym_tab);
+  struct rans_sym rans_sym_tab[SYMBOLS];
+  rans_build_sym_tab(cdf, rans_sym_tab);
   gettimeofday(&t0, 0);
   struct AnsCoder ac;
   ans_write_init(&ac, buffer);
