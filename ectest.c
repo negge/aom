@@ -193,6 +193,99 @@ void rans_build_dec_tab(const struct rans_sym sym_tab[], rans_lut dec_tab) {
 #define TREE av1_intra_mode_tree
 #define PROBS default_if_y_probs[0]
 
+#define DAALA_TEST() \
+  do { \
+    gettimeofday(&t0, 0); \
+    daala_writer dw; \
+    aom_daala_start_encode(&dw, buffer); \
+    for (i = 0; i < NSYMBS; i++) { \
+      daala_write_symbol(&dw, symbs[i], cdf, SYMBOLS); \
+    } \
+    aom_daala_stop_encode(&dw); \
+    gettimeofday(&t1, 0); \
+    time = (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f; \
+    fprintf(stderr, "Daala EC size = %i (%lf ms)\n", dw.pos, time); \
+    times[0][0] += time; \
+    gettimeofday(&t0, 0); \
+    daala_reader dr; \
+    aom_daala_reader_init(&dr, buffer, dw.pos); \
+    for (i = 0; i < NSYMBS; i++) { \
+      dsymbs[i] = daala_read_tree_cdf(&dr, cdf, SYMBOLS); \
+    } \
+    gettimeofday(&t1, 0); \
+    err = 0; \
+    for (i = 0; i < NSYMBS; i++) { \
+      if (symbs[i] != dsymbs[i]) { \
+        err++; \
+      } \
+    } \
+    time = (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f; \
+    fprintf(stderr, "Daala EC errors = %i (%lf ms)\n", err, time); \
+    times[0][1] += time; \
+  } while(0)
+
+#define VPXBOOL_TEST() \
+  do { \
+    aom_dk_writer bw; \
+    gettimeofday(&t0, 0); \
+    aom_dk_start_encode(&bw, buffer); \
+    for (i = 0; i < NSYMBS; i++) { \
+      av1_write_token(&bw, TREE, PROBS, &tokens[inv[symbs[i]]]); \
+    } \
+    aom_dk_stop_encode(&bw); \
+    gettimeofday(&t1, 0); \
+    time = (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f; \
+    fprintf(stderr, "VPXbool EC size = %i (%lf ms)\n", bw.pos, time); \
+    times[1][0] += time; \
+    gettimeofday(&t0, 0); \
+    struct aom_dk_reader br; \
+    aom_dk_reader_init(&br, buffer, bw.pos, NULL, NULL); \
+    for (i = 0; i < NSYMBS; i++) { \
+      dsymbs[i] = ind[aom_read_tree(&br, TREE, PROBS)]; \
+    } \
+    gettimeofday(&t1, 0); \
+    err = 0; \
+    for (i = 0; i < NSYMBS; i++) { \
+      if (symbs[i] != dsymbs[i]) { \
+        err++; \
+      } \
+    } \
+    time = (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f; \
+    fprintf(stderr, "VPXbool EC errors = %i (%lf ms)\n", err, time); \
+    times[1][1] += time; \
+  } while (0)
+
+#define RANS_TEST() \
+  do { \
+    gettimeofday(&t0, 0); \
+    struct AnsCoder ac; \
+    ans_write_init(&ac, buffer); \
+    for (i = NSYMBS; i-- > 0; ) { \
+      rans_write(&ac, &rans_sym_tab[symbs[i]]); \
+    } \
+    int ans_size = ans_write_end(&ac); \
+    gettimeofday(&t1, 0); \
+    time = (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f; \
+    fprintf(stderr, "Ans EC size = %i (%lf ms)\n", ans_size, time); \
+    times[2][0] += time; \
+    gettimeofday(&t0, 0); \
+    struct AnsDecoder ad; \
+    ans_read_init(&ad, buffer, ans_size); \
+    for (i = 0; i < NSYMBS; i++) { \
+      dsymbs[i] = rans_read(&ad, dec_tab); \
+    } \
+    gettimeofday(&t1, 0); \
+    err = 0; \
+    for (i = 0; i < NSYMBS; i++) { \
+      if (symbs[i] != dsymbs[i]) { \
+        err++; \
+      } \
+    } \
+    time = (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f; \
+    fprintf(stderr, "ANS EC errors = %i (%lf ms)\n", err, time); \
+    times[2][1] += time; \
+  } while (0)
+
 int main(int argc, char *argv[]) {
   uint16_t cdf[SYMBOLS];
   av1_tree_to_cdf(TREE, PROBS, cdf);
@@ -213,111 +306,65 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
   gen_symbs(NSYMBS, symbs, SYMBOLS, cdf);
-  /* Encode NSYMBS using the Daala entropy coder. */
-  uint8_t *buffer;
-  buffer = malloc(BUF_SIZE);
-  if (buffer == NULL) {
-    fprintf(stderr, "Error allocating memory for EC buffer\n");
-    return EXIT_FAILURE;
-  }
-  struct timeval t0, t1;
-  gettimeofday(&t0, 0);
-  daala_writer dw;
-  aom_daala_start_encode(&dw, buffer);
-  for (i = 0; i < NSYMBS; i++) {
-    daala_write_symbol(&dw, symbs[i], cdf, SYMBOLS);
-  }
-  aom_daala_stop_encode(&dw);
-  gettimeofday(&t1, 0);
-  fprintf(stderr, "Daala EC size = %i (%lf ms)\n", dw.pos,
-   (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f);
-  /* Decode NSYMBS using the Daala entropy coder. */
   char *dsymbs;
   dsymbs = malloc(NSYMBS);
   if (dsymbs == NULL) {
     fprintf(stderr, "Error allocating memory for decoded symbols\n");
     return EXIT_FAILURE;
   }
-  gettimeofday(&t0, 0);
-  daala_reader dr;
-  aom_daala_reader_init(&dr, buffer, dw.pos);
-  for (i = 0; i < NSYMBS; i++) {
-    dsymbs[i] = daala_read_tree_cdf(&dr, cdf, SYMBOLS);
+  uint8_t *buffer;
+  buffer = malloc(BUF_SIZE);
+  if (buffer == NULL) {
+    fprintf(stderr, "Error allocating memory for EC buffer\n");
+    return EXIT_FAILURE;
   }
-  gettimeofday(&t1, 0);
-  int err;
-  err = 0;
-  for (i = 0; i < NSYMBS; i++) {
-    if (symbs[i] != dsymbs[i]) {
-      err++;
-    }
-  }
-  fprintf(stderr, "Daala EC errors = %i (%lf ms)\n", err,
-   (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f);
-  /* Encode NSYMBS using the vpxbool entropy coder */
+  /* Compute vpxbool tables */
   struct av1_token tokens[SYMBOLS];
   av1_tokens_from_tree(tokens, TREE);
   int ind[SYMBOLS];
   int inv[SYMBOLS];
-  av1_indices_from_tree(inv, ind, SYMBOLS, TREE);
-  gettimeofday(&t0, 0);
-  aom_dk_writer bw;
-  aom_dk_start_encode(&bw, buffer);
-  for (i = 0; i < NSYMBS; i++) {
-    av1_write_token(&bw, TREE, PROBS, &tokens[ind[symbs[i]]]);
-  }
-  aom_dk_stop_encode(&bw);
-  gettimeofday(&t1, 0);
-  fprintf(stderr, "VPXbool EC size = %i (%lf ms)\n", bw.pos,
-   (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f);
-  /* Decode NSYMBS using the rANS entropy coder. */
-  gettimeofday(&t0, 0);
-  struct aom_dk_reader br;
-  aom_dk_reader_init(&br, buffer, bw.pos, NULL, NULL);
-  for (i = 0; i < NSYMBS; i++) {
-    dsymbs[i] = inv[aom_read_tree(&br, TREE, PROBS)];
-  }
-  gettimeofday(&t1, 0);
-  err = 0;
-  for (i = 0; i < NSYMBS; i++) {
-    if (symbs[i] != dsymbs[i]) {
-      err++;
-    }
-  }
-  fprintf(stderr, "VPXbool EC errors = %i (%lf ms)\n", err,
-   (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f);
-  /* Encode NSYMBS using the rANS entropy coder.
-     Note the symbols are encoded in reverse order. */
+  av1_indices_from_tree(ind, inv, SYMBOLS, TREE);
+  /* Compute rANS tables */
   struct rans_sym rans_sym_tab[SYMBOLS];
   rans_build_sym_tab(cdf, rans_sym_tab);
-  gettimeofday(&t0, 0);
-  struct AnsCoder ac;
-  ans_write_init(&ac, buffer);
-  for (i = NSYMBS; i-- > 0; ) {
-    rans_write(&ac, &rans_sym_tab[symbs[i]]);
-  }
-  int ans_size = ans_write_end(&ac);
-  gettimeofday(&t1, 0);
-  fprintf(stderr, "Ans EC size = %i (%lf ms)\n", ans_size,
-   (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f);
-  /* Decode NSYMBS using the rANS entropy coder. */
   rans_lut dec_tab;
   rans_build_dec_tab(rans_sym_tab, dec_tab);
-  gettimeofday(&t0, 0);
-  struct AnsDecoder ad;
-  ans_read_init(&ad, buffer, ans_size);
-  for (i = 0; i < NSYMBS; i++) {
-    dsymbs[i] = rans_read(&ad, dec_tab);
+  struct timeval t0, t1;
+  int err;
+  double time;
+  double times[3][2];
+  for (i = 0; i < 3; i++) {
+    times[i][0] = times[i][1] = 0;
   }
-  gettimeofday(&t1, 0);
-  err = 0;
-  for (i = 0; i < NSYMBS; i++) {
-    if (symbs[i] != dsymbs[i]) {
-      err++;
-    }
-  }
-  fprintf(stderr, "ANS EC errors = %i (%lf ms)\n", err,
-   (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f);
+  /* Run some tests. */
+  fprintf(stderr, "Order 1\n");
+  DAALA_TEST();
+  VPXBOOL_TEST();
+  RANS_TEST();
+  fprintf(stderr, "Order 2\n");
+  DAALA_TEST();
+  RANS_TEST();
+  VPXBOOL_TEST();
+  fprintf(stderr, "Order 3\n");
+  VPXBOOL_TEST();
+  DAALA_TEST();
+  RANS_TEST();
+  fprintf(stderr, "Order 4\n");
+  VPXBOOL_TEST();
+  RANS_TEST();
+  DAALA_TEST();
+  fprintf(stderr, "Order 5\n");
+  RANS_TEST();
+  DAALA_TEST();
+  VPXBOOL_TEST();
+  fprintf(stderr, "Order 6\n");
+  RANS_TEST();
+  VPXBOOL_TEST();
+  DAALA_TEST();
+  fprintf(stderr, "           enc (ms)    dec (ms)\n");
+  fprintf(stderr, "  Daala: %11.6lf %11.6lf\n", times[0][0]/6, times[0][1]/6);
+  fprintf(stderr, "VPXbool: %11.6lf %11.6lf\n", times[1][0]/6, times[1][1]/6);
+  fprintf(stderr, "   rANS: %11.6lf %11.6lf\n", times[2][0]/6, times[2][1]/6);
   free(symbs);
   free(dsymbs);
   free(buffer);
